@@ -1,0 +1,203 @@
+"""Mistral Voxtral 3 clients: realtime STT websocket, realtime TTS websocket, batch speech over HTTPS.
+
+Protocols follow the Mistral audio docs: realtime STT at
+``wss://<base>/v1/audio/transcriptions/realtime?model=...`` with ``session.created`` /
+``session.update`` / ``input_audio.append`` / ``transcription.text.delta`` / ``turn.*`` /
+``transcription.done`` events; realtime TTS at ``wss://<base>/v1/audio/speech/realtime?model=...``
+with ``session.update`` / ``input_text.append`` / ``input_text.flush`` and
+``speech.audio.delta`` (base64 float32 PCM) until ``speech.audio.done``; batch TTS at
+``POST <base>/v1/audio/speech``. Auth is always ``Authorization: Bearer MISTRAL_API_KEY``,
+with the key read profile-scoped from the Hermes .env.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Dict, Iterator, Optional
+
+from gateway.platforms._shared import get_scoped_secret
+
+from .audio import float32_to_pcm16
+
+
+def mistral_api_key() -> str:
+    return str(get_scoped_secret("MISTRAL_API_KEY", "") or "").strip()
+
+
+def ws_base(base_url: str) -> str:
+    base = (base_url or "").strip().rstrip("/")
+    if base.startswith("https://"):
+        return "wss://" + base[len("https://"):]
+    if base.startswith("http://"):
+        return "ws://" + base[len("http://"):]
+    return "wss://" + base
+
+
+def _headers(api_key: str) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {api_key}"}
+
+
+async def _ws_connect(url: str, headers: Dict[str, str], **kwargs: Any):
+    try:
+        from websockets.asyncio.client import connect as _connect
+    except ImportError:
+        from websockets import connect as _connect
+    try:
+        return await _connect(url, additional_headers=headers, **kwargs)
+    except TypeError:
+        return await _connect(url, extra_headers=headers, **kwargs)
+
+
+def _ws_sync_connect(url: str, headers: Dict[str, str], **kwargs: Any):
+    try:
+        from websockets.sync.client import connect as _connect
+    except ImportError:
+        from websockets.legacy.sync.client import connect as _connect
+    try:
+        return _connect(url, additional_headers=headers, **kwargs)
+    except TypeError:
+        return _connect(url, extra_headers=headers, **kwargs)
+
+
+class RealtimeSTT:
+    """One realtime transcription session per phone call (async, lives on the gateway loop)."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        model: str,
+        api_key: str,
+        sample_rate: int = 8000,
+        delay_ms: int = 480,
+        language: str = "",
+        context_bias: tuple = (),
+        turn_detection: Optional[dict] = None,
+    ) -> None:
+        self.base_url = base_url
+        self.model = model
+        self.api_key = api_key
+        self.sample_rate = sample_rate
+        self.delay_ms = delay_ms
+        self.language = language
+        self.context_bias = tuple(context_bias)
+        self.turn_detection = turn_detection
+        self.ws = None
+
+    @property
+    def url(self) -> str:
+        return f"{ws_base(self.base_url)}/v1/audio/transcriptions/realtime?model={urllib.parse.quote(self.model)}"
+
+    async def open(self) -> None:
+        self.ws = await _ws_connect(self.url, _headers(self.api_key), max_size=None, ping_interval=20, ping_timeout=30)
+        first = json.loads(await self.ws.recv())
+        if first.get("type") == "error":
+            raise RuntimeError(f"Mistral STT error: {first.get('error')}")
+        if first.get("type") != "session.created":
+            raise RuntimeError(f"Mistral STT: expected session.created, got {first.get('type')}")
+        session: Dict[str, Any] = {
+            "audio_format": {"encoding": "pcm_s16le", "sample_rate": self.sample_rate},
+            "target_streaming_delay_ms": self.delay_ms,
+        }
+        if self.language:
+            session["language"] = self.language
+        if self.context_bias:
+            session["context_bias"] = list(self.context_bias)
+        session["turn_detection"] = self.turn_detection if self.turn_detection is not None else {}
+        await self.ws.send(json.dumps({"type": "session.update", "session": session}))
+
+    async def send_audio(self, pcm16: bytes) -> None:
+        await self.ws.send(json.dumps({"type": "input_audio.append", "audio": base64.b64encode(pcm16).decode()}))
+
+    async def end(self) -> None:
+        await self.ws.send(json.dumps({"type": "input_audio.end"}))
+
+    async def events(self) -> Any:
+        async for raw in self.ws:
+            yield json.loads(raw)
+
+    async def close(self) -> None:
+        if self.ws is not None:
+            try:
+                await self.ws.close()
+            except Exception:
+                pass
+            self.ws = None
+
+
+class RealtimeTTSStreamer:
+    """Synchronous realtime TTS websocket, for use inside the blocking ``stream()`` generator."""
+
+    def __init__(self, *, base_url: str, model: str, api_key: str, voice: str, sample_rate: int = 24000) -> None:
+        self.base_url = base_url
+        self.model = model
+        self.api_key = api_key
+        self.voice = voice
+        self.sample_rate = sample_rate
+
+    @property
+    def url(self) -> str:
+        return f"{ws_base(self.base_url)}/v1/audio/speech/realtime?model={urllib.parse.quote(self.model)}"
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        """Yield int16 mono PCM at ``sample_rate`` for *text*."""
+        with _ws_sync_connect(self.url, _headers(self.api_key), max_size=None, ping_interval=20, ping_timeout=30) as ws:
+            first = json.loads(ws.recv())
+            if first.get("type") == "error":
+                raise RuntimeError(f"Mistral TTS error: {first.get('error')}")
+            ws.send(json.dumps({
+                "type": "session.update",
+                "session": {
+                    "voice": self.voice,
+                    "audio_format": {"encoding": "pcm_f32le", "sample_rate": self.sample_rate},
+                },
+            }))
+            ws.send(json.dumps({"type": "input_text.append", "text": text}))
+            ws.send(json.dumps({"type": "input_text.flush"}))
+            for raw in ws:
+                event = json.loads(raw)
+                etype = event.get("type")
+                if etype == "speech.audio.delta":
+                    payload = event.get("audio")
+                    if payload:
+                        yield float32_to_pcm16(base64.b64decode(payload))
+                elif etype == "speech.audio.done":
+                    break
+                elif etype == "error":
+                    raise RuntimeError(f"Mistral TTS error: {event.get('error')}")
+
+
+def batch_speech(
+    *,
+    base_url: str,
+    model: str,
+    api_key: str,
+    text: str,
+    voice_id: str,
+    output_format: str = "mp3",
+    sample_rate: int = 24000,
+    timeout: int = 120,
+) -> bytes:
+    """POST /v1/audio/speech (batch) and return the audio bytes."""
+    url = base_url.rstrip("/") + "/v1/audio/speech"
+    body = json.dumps({
+        "model": model,
+        "input": text,
+        "voice_id": voice_id,
+        "output_format": output_format,
+        "sample_rate": sample_rate,
+    }).encode()
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read()[:500].decode("utf-8", "replace")
+        raise RuntimeError(f"Mistral speech HTTP {exc.code}: {detail}") from exc
