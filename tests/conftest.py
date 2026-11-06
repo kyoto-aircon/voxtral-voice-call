@@ -132,6 +132,21 @@ class _TTSProvider:
     pass
 
 
+class _TranscriptionProvider:
+    pass
+
+
+class _TranscriptionStreamSession:
+    def push_audio(self, chunk):
+        raise NotImplementedError
+
+    def finalize(self):
+        raise NotImplementedError
+
+    def partial_transcript(self):
+        return ""
+
+
 class _StandaloneSendPolicy:
     def __init__(self, text_direct=False):
         self.text_direct = text_direct
@@ -152,6 +167,8 @@ def install_stubs():
     _mod("gateway.platforms.send_targets", StandaloneSendPolicy=_StandaloneSendPolicy)
     _mod("agent")
     _mod("agent.tts_provider", TTSProvider=_TTSProvider)
+    _mod("agent.transcription_provider", TranscriptionProvider=_TranscriptionProvider,
+         TranscriptionStreamSession=_TranscriptionStreamSession)
 
 
 install_stubs()

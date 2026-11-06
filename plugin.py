@@ -69,6 +69,7 @@ def register(ctx) -> None:
     from gateway.platforms.send_targets import StandaloneSendPolicy
 
     from .adapter import VoiceCallAdapter, check_requirements, is_connected
+    from .stt_provider import VoxtralRealtimeSTTProvider
     from .tts_provider import VoxtralRealtimeTTSProvider
 
     ctx.register_platform(
@@ -101,3 +102,4 @@ def register(ctx) -> None:
         dashboard_required_env=("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER", "MISTRAL_API_KEY"),
     )
     ctx.register_tts_provider(VoxtralRealtimeTTSProvider())
+    ctx.register_transcription_provider(VoxtralRealtimeSTTProvider())

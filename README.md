@@ -1,14 +1,59 @@
 # voxtral-voice-call — call Hermes and talk to it fluidly
 
-A standalone Hermes plugin that gives your agent a phone number. Callers dial your Twilio
-number and have a real-time voice conversation with Hermes: caller speech is streamed to
-**Voxtral Mini Transcribe Realtime 3** (server-side turn detection), each finished turn runs
-through the normal Hermes agent (tools, memory, skills, per-call session), and the reply is
-spoken back with **Voxtral Mini TTS Realtime 3** through the gateway's streaming-TTS pipeline
-(sentence-level, ~90 ms time-to-first-audio) with barge-in support.
+A standalone Hermes plugin that gives Hermes a **Voxtral 3 voice on every voice-capable
+surface — no Twilio needed**:
 
-No Hermes core changes — everything ships as this plugin: a `voice-call` gateway platform
-adapter plus a `voxtral-realtime` TTS provider.
+- **STT provider `voxtral-realtime`** (`stt.provider`) — batch transcription for voice notes
+  and Discord-voice utterances, plus live streaming sessions (`stt.streaming: true`) for
+  Desktop/CLI voice chat: Voxtral Mini Transcribe Realtime 3 over websocket, 16 kHz PCM in,
+  partial transcripts out.
+- **TTS provider `voxtral-realtime`** (`tts.provider`) — Voxtral Mini TTS Realtime 3 streaming
+  PCM (~90 ms time-to-first-audio), so Discord voice replies, Desktop speak-stream, and voice
+  bubbles are spoken sentence-by-sentence while the LLM is still generating
+  (`streams_pcm` opts into the gateway's streaming-TTS consumer).
+- **Optional phone-call adapter** (`voice-call` platform, only active when `TWILIO_*` env is
+  set) — answers calls on a Twilio number: caller audio streams to Voxtral Mini Transcribe
+  Realtime 3 with server-side turn detection, each turn runs through the Hermes agent on a
+  per-call session, and the reply is spoken back with barge-in support.
+
+No Hermes core changes — everything ships as this plugin: two providers plus an optional
+gateway platform adapter.
+
+## Use on Discord voice or Desktop voice chat (no Twilio)
+
+```yaml
+# config.yaml
+stt:
+  provider: voxtral-realtime
+  streaming: true          # live 16 kHz sessions for voice chat (Desktop/CLI chained mode)
+tts:
+  provider: voxtral-realtime
+voice:
+  auto_tts: true           # speak replies aloud on voice turns
+```
+
+- **Discord**: `/voice join` in a voice channel — utterances are transcribed by
+  `voxtral-realtime` and replies are spoken into the channel via the gateway's streaming-TTS
+  contract (barge-in supported).
+- **Desktop / CLI voice chat**: chained voice mode picks up the same two providers
+  (`stt.streaming` + `tts.provider`), so talking to Hermes on Desktop uses Voxtral 3 end to
+  end. (The `hermes-live-voice` catalog plugin is a separate OpenAI gpt-live lane — not needed
+  here.)
+- **Any other gateway with voice** (voice messages, voice bubbles): `stt.provider` +
+  `tts.provider` cover them.
+
+`~/.hermes/.env` only needs:
+
+```dotenv
+MISTRAL_API_KEY=...   # template already in ~/.hermes/.env; console.mistral.ai
+```
+
+## Optional: real phone calls via Twilio
+
+If you later want an actual phone number, add the `TWILIO_*` vars below and enable
+`platforms.voice-call` — see "Configuration".
+
+
 
 ## Architecture
 
@@ -40,7 +85,7 @@ hermes plugins install <owner>/voxtral-voice-call
 
 Dependencies (`aiohttp`, `websockets`) are declared in `plugin.yaml`.
 
-## Configuration
+## Configuration (Twilio phone-call adapter — optional)
 
 Secrets live in `~/.hermes/.env` (the `MISTRAL_API_KEY` template is already there):
 

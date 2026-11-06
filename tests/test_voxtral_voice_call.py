@@ -22,7 +22,9 @@ from voxtral_voice_call.adapter import (
     _twiml_hangup,
 )
 from voxtral_voice_call.call_session import CallSession
+from voxtral_voice_call.stt_provider import VoxtralRealtimeSTTProvider
 from voxtral_voice_call.tts_provider import VoxtralRealtimeTTSProvider
+from voxtral_voice_call import voxtral as voxtral_mod
 
 
 # ---------------------------------------------------------------- audio
@@ -281,6 +283,87 @@ def test_provider_stream_empty_text():
     assert list(provider.stream("   ")) == []
 
 
+# ---------------------------------------------------------------- stt provider
+
+
+def test_stt_provider_identity():
+    provider = VoxtralRealtimeSTTProvider()
+    assert provider.name == "voxtral-realtime"
+    assert provider.streaming_capable is True
+    hermes_shared._SECRETS.clear()
+    assert provider.is_available() is False
+    hermes_shared._SECRETS["MISTRAL_API_KEY"] = "k"
+    import importlib.util
+    if importlib.util.find_spec("websockets") is not None:
+        assert provider.is_available() is True
+    hermes_shared._SECRETS.clear()
+
+
+def test_stt_transcribe_envelope(monkeypatch, tmp_path):
+    import voxtral_voice_call.stt_provider as sp
+    provider = VoxtralRealtimeSTTProvider()
+    wav = tmp_path / "a.wav"
+    wav.write_bytes(b"RIFFfake")
+    monkeypatch.setattr(sp, "batch_transcribe",
+                        lambda **kw: {"success": True, "transcript": "hi there", "provider": kw["provider"]})
+    result = provider.transcribe(str(wav), language="en")
+    assert result == {"success": True, "transcript": "hi there", "provider": "voxtral-realtime"}
+
+
+class FakeSyncWS:
+    def __init__(self, events):
+        import queue
+        self._queue = queue.Queue()
+        for ev in events:
+            self._queue.put(json.dumps(ev))
+        self.sent = []
+        self.closed = False
+
+    def recv(self):
+        return self._queue.get(timeout=5)
+
+    def send(self, data):
+        msg = json.loads(data)
+        self.sent.append(msg)
+        if msg.get("type") == "input_audio.end":
+            self._queue.put(json.dumps({"type": "transcription.done", "text": "final text"}))
+
+    def __iter__(self):
+        import queue
+        while True:
+            try:
+                yield self._queue.get(timeout=5)
+            except queue.Empty:
+                if self.closed:
+                    return
+
+    def close(self):
+        self.closed = True
+
+
+def test_stt_stream_session(monkeypatch):
+    fake = FakeSyncWS([
+        {"type": "session.created", "session": {}},
+        {"type": "transcription.text.delta", "text": "hel"},
+        {"type": "transcription.text.delta", "text": "lo"},
+    ])
+    monkeypatch.setattr(voxtral_mod, "_ws_sync_connect", lambda *a, **kw: fake)
+    hermes_shared._SECRETS["MISTRAL_API_KEY"] = "k"
+    provider = VoxtralRealtimeSTTProvider()
+    session = provider.open_stream_session(language="en")
+    session.push_audio(b"\x00" * 320)
+    import time
+    deadline = time.time() + 5
+    while time.time() < deadline and session.partial_transcript() != "hello":
+        time.sleep(0.02)
+    assert session.partial_transcript() == "hello"
+    appends = [m for m in fake.sent if m["type"] == "input_audio.append"]
+    assert len(appends) == 1
+    result = session.finalize()
+    assert result == {"success": True, "transcript": "final text", "provider": "voxtral-realtime"}
+    hermes_shared._SECRETS.clear()
+
+
 # ---------------------------------------------------------------- plugin registration
 
 
@@ -296,6 +379,9 @@ def test_register_wires_platform_and_tts_provider():
         def register_tts_provider(self, provider):
             calls["tts_provider"] = provider
 
+        def register_transcription_provider(self, provider):
+            calls["stt_provider"] = provider
+
     plugin_mod.register(Ctx())
     assert calls["platform"]["name"] == "voice-call"
     assert calls["platform"]["adapter_factory"] is VoiceCallAdapter
@@ -303,3 +389,4 @@ def test_register_wires_platform_and_tts_provider():
     assert calls["platform"]["env_enable_credentials"] == ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN")
     assert calls["platform"]["allowed_users_env"] == "VOICE_CALL_ALLOWED_NUMBERS"
     assert calls["tts_provider"].name == "voxtral-realtime"
+    assert calls["stt_provider"].name == "voxtral-realtime"

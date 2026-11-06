@@ -3,14 +3,14 @@ label: Voice Calls (Twilio + Mistral Voxtral 3)
 kind: platform
 version: 0.1.0
 description: >
-  Answer phone calls on a Twilio number and talk to Hermes fluidly. Caller audio
-  streams to Voxtral Mini Transcribe Realtime 3 (server-side turn detection), each
-  finished turn is dispatched to the Hermes agent as a voice message on a per-call
-  session, and the reply is spoken back with Voxtral Mini TTS Realtime 3 through the
-  gateway's streaming-TTS pipeline (~90 ms time-to-first-audio, sentence-level),
-  with barge-in support. The Mistral API key is read from the Hermes .env
-  (MISTRAL_API_KEY, already templated there); Twilio credentials come from the same
-  .env. Runs entirely as a standalone plugin - no Hermes core changes.
+  Give Hermes a Voxtral 3 voice on every voice-capable surface, no Twilio needed:
+  registers a `voxtral-realtime` STT provider (batch + live streaming sessions) and a
+  `voxtral-realtime` TTS provider (realtime streaming PCM), so Discord voice channels
+  (/voice join), Desktop/CLI voice chat, and voice messages speak and listen with Voxtral 3
+  via `stt.provider` / `tts.provider`. Optionally also answers real phone calls on a Twilio
+  number (voice-call platform adapter: TwiML webhook + Media Streams, per-call agent
+  sessions, barge-in). The Mistral API key is read from the Hermes .env (MISTRAL_API_KEY,
+  already templated there). Runs entirely as a standalone plugin - no Hermes core changes.
 author: Hermes community
 requires_env:
   - name: MISTRAL_API_KEY
@@ -18,20 +18,20 @@ requires_env:
     prompt: "Mistral API key"
     url: "https://console.mistral.ai/"
     password: true
+optional_env:
   - name: TWILIO_ACCOUNT_SID
-    description: "Twilio Account SID"
+    description: "Twilio Account SID (only needed for the optional phone-call adapter)"
     prompt: "Twilio Account SID"
     url: "https://www.twilio.com/"
     password: false
   - name: TWILIO_AUTH_TOKEN
-    description: "Twilio Auth Token (used for webhook signature validation and outbound REST)"
+    description: "Twilio Auth Token (webhook signature validation; only for the phone-call adapter)"
     prompt: "Twilio Auth Token"
     password: true
   - name: TWILIO_PHONE_NUMBER
     description: "Twilio voice-capable phone number (E.164) that callers dial"
     prompt: "Twilio phone number"
     password: false
-optional_env:
   - name: VOICE_CALL_WEBHOOK_URL
     description: "Public HTTPS URL of the voice webhook, e.g. https://example.com/webhooks/twilio/voice (set as the Twilio number's Voice URL; also used for X-Twilio-Signature validation)"
     prompt: "Public voice webhook URL"
