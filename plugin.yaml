@@ -109,3 +109,110 @@ optional_env:
 python_dependencies:
   - aiohttp>=3.9,<4
   - websockets>=12,<16
+config_schema:
+  mistral_api_key:
+    type: secret
+    env: MISTRAL_API_KEY
+    label: "Mistral API key"
+    description: "Voxtral 3 STT/TTS key (stored in ~/.hermes/.env as MISTRAL_API_KEY)"
+    required: true
+  mistral_base_url:
+    type: str
+    default: "https://api.mistral.ai"
+    label: "Mistral base URL"
+    description: "Use an EU endpoint for zero-retention"
+  stt_model:
+    type: str
+    default: "voxtral-mini-transcribe-realtime-3-0"
+    label: "Realtime STT model"
+  stt_delay_ms:
+    type: int
+    default: 480
+    label: "STT streaming delay (ms)"
+    description: "80-1200 or 2400; lower is faster, less accurate"
+  stt_language:
+    type: str
+    default: ""
+    label: "STT language"
+    description: "ISO 639-1 code (e.g. en); empty = auto-detect"
+  stt_context_bias:
+    type: str
+    default: ""
+    label: "STT context bias"
+    description: "Comma-separated terms to bias transcription toward"
+  tts_model:
+    type: str
+    default: "voxtral-mini-tts-3-0"
+    label: "TTS 3 model"
+    description: "Used for both the realtime websocket and batch endpoint"
+  tts_voice:
+    type: str
+    default: "en_paul_neutral"
+    label: "Voice"
+    description: "Voxtral 3 preset voice; one persistent websocket is kept per voice"
+    choices: ["en_paul_neutral", "en_paul_happy", "en_paul_confident", "gb_jane_neutral", "gb_oliver_neutral", "fr_marie_neutral", "voice_3150", "voice_1788", "voice_591", "voice_483", "voice_3141", "voice_3133", "voice_3135", "voice_3142"]
+  tts_voice_id:
+    type: str
+    default: "en_paul_neutral"
+    label: "Batch TTS voice ID"
+    description: "Preset voice for the batch /v1/audio/speech endpoint"
+  tts_sample_rate:
+    type: int
+    default: 24000
+    label: "TTS sample rate (Hz)"
+  turn_detection:
+    type: dict
+    default: {}
+    label: "STT turn detection overrides"
+    description: "Empty = server defaults (start/end thresholds, min_silence_ms, end_timeout_ms)"
+  webhook_host:
+    type: str
+    default: "127.0.0.1"
+    label: "Webhook bind host"
+  webhook_port:
+    type: int
+    default: 8081
+    label: "Webhook bind port"
+  webhook_url:
+    type: str
+    default: ""
+    label: "Public voice webhook URL"
+    description: "https://your-host/webhooks/twilio/voice (Twilio adapter only; also validates X-Twilio-Signature)"
+  insecure_no_signature:
+    type: bool
+    default: false
+    label: "Disable Twilio signature validation"
+    description: "Local development only — never in production"
+  allowed_numbers:
+    type: str
+    default: ""
+    label: "Allowed caller numbers"
+    description: "Comma-separated E.164 numbers allowed to call (Twilio adapter only)"
+  allow_all:
+    type: bool
+    default: false
+    label: "Allow all callers"
+  consent_text:
+    type: str
+    default: ""
+    label: "Consent announcement"
+    description: "Spoken (TwiML <Say>) before connecting a call"
+  max_call_seconds:
+    type: int
+    default: 1800
+    label: "Max call seconds"
+    description: "Hard cap per call, for cost control"
+  twilio_account_sid:
+    type: secret
+    env: TWILIO_ACCOUNT_SID
+    label: "Twilio Account SID"
+    description: "Optional phone-call adapter only (stored in ~/.hermes/.env)"
+  twilio_auth_token:
+    type: secret
+    env: TWILIO_AUTH_TOKEN
+    label: "Twilio Auth Token"
+  twilio_phone_number:
+    type: secret
+    env: TWILIO_PHONE_NUMBER
+    label: "Twilio phone number"
+    description: "Voice-capable E.164 number callers dial (optional phone-call adapter)"

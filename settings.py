@@ -20,6 +20,21 @@ DEFAULT_TTS_VOICE_ID = "en_paul_neutral"
 DEFAULT_TTS_SAMPLE_RATE = 24000
 DEFAULT_MAX_CALL_SECONDS = 1800
 PHONE_SAMPLE_RATE = 8000
+PLUGIN_ENTRY_ID = "voxtral-voice-call"
+
+
+def _plugin_settings() -> dict:
+    """``plugins.entries.voxtral-voice-call.settings`` from config.yaml (the Desktop/TUI
+    Plugins settings form writes there via the manifest ``config_schema``). Read as the
+    lowest-precedence source: explicit env var > platform YAML extra > plugin settings > default."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        entry = ((cfg.get("plugins") or {}).get("entries") or {}).get(PLUGIN_ENTRY_ID) or {}
+        settings = entry.get("settings") or {}
+        return dict(settings) if isinstance(settings, dict) else {}
+    except Exception:
+        return {}
 
 
 def _csv(raw: Any) -> list[str]:
@@ -64,11 +79,17 @@ class VoiceCallSettings:
     @classmethod
     def from_extra(cls, extra: dict) -> "VoiceCallSettings":
         extra = extra or {}
+        plugin_settings = _plugin_settings()
 
         def get(key: str, env: str, default: Any = "") -> Any:
-            return extra_or_secret(extra, key, env, default)
+            val = extra_or_secret(extra, key, env, None, blank_is_unset=True)
+            if val is None or str(val).strip() == "":
+                val = plugin_settings.get(key)
+            if val is None or str(val).strip() == "":
+                return default
+            return val
 
-        turn_detection_raw = extra_or_secret(extra, "turn_detection", "VOICE_CALL_TURN_DETECTION", "")
+        turn_detection_raw = get("turn_detection", "VOICE_CALL_TURN_DETECTION", "")
         turn_detection: dict = {}
         if isinstance(turn_detection_raw, dict):
             turn_detection = dict(turn_detection_raw)

@@ -49,6 +49,11 @@ voice:
 MISTRAL_API_KEY=...   # template already in ~/.hermes/.env; console.mistral.ai
 ```
 
+All plugin settings (models, voice, STT delay/language/bias, webhook, allowlist, consent, call
+cap, Twilio creds) are also editable in the **plugin settings UI** — Desktop → Settings →
+Plugins → `voxtral-voice-call` card (rendered from the manifest `config_schema`; secrets go to
+`~/.hermes/.env`, the rest to `plugins.entries.voxtral-voice-call.settings` in config.yaml).
+
 ### Switch the voice
 
 Pick any Voxtral 3 preset in the Desktop TTS voice dropdown, or from a terminal:

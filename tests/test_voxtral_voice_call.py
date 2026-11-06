@@ -89,6 +89,18 @@ def test_settings_env_and_yaml(monkeypatch):
     assert s2.caller_allowed("+3333") is True
 
 
+def test_settings_fall_back_to_plugin_settings(monkeypatch):
+    import voxtral_voice_call.settings as st
+    monkeypatch.delenv("VOICE_CALL_STT_DELAY_MS", raising=False)
+    monkeypatch.delenv("VOICE_CALL_TTS_VOICE", raising=False)
+    monkeypatch.setattr(st, "_plugin_settings", lambda: {"stt_delay_ms": 240, "tts_voice": "gb_jane_neutral"})
+    s = _settings({})
+    assert s.stt_delay_ms == 240
+    assert s.tts_voice == "gb_jane_neutral"
+    monkeypatch.setenv("VOICE_CALL_STT_DELAY_MS", "900")
+    assert _settings({}).stt_delay_ms == 900
+
+
 # ---------------------------------------------------------------- twilio helpers
 
 
