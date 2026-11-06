@@ -17,7 +17,10 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Any, Dict, Iterator, Optional
+
+import threading
 
 from gateway.platforms._shared import get_scoped_secret
 
@@ -169,6 +172,148 @@ class RealtimeTTSStreamer:
                     break
                 elif etype == "error":
                     raise RuntimeError(f"Mistral TTS error: {event.get('error')}")
+
+
+class RealtimeSTTSyncSession:
+    """Blocking realtime STT session for worker threads (plugin TranscriptionStreamSession)."""
+
+    def __init__(self, *, base_url: str, model: str, api_key: str, provider: str = "voxtral-realtime",
+                 sample_rate: int = 16000, delay_ms: int = 480, language: str = "",
+                 context_bias: tuple = ()) -> None:
+        self.base_url = base_url
+        self.model = model
+        self.api_key = api_key
+        self.provider = provider
+        self.sample_rate = sample_rate
+        self.delay_ms = delay_ms
+        self.language = language
+        self.context_bias = tuple(context_bias)
+        self._ws = None
+        self._lock = threading.Lock()
+        self._partial = ""
+        self._final: Optional[str] = None
+        self._error: Optional[str] = None
+        self._done = threading.Event()
+
+    @property
+    def url(self) -> str:
+        return f"{ws_base(self.base_url)}/v1/audio/transcriptions/realtime?model={urllib.parse.quote(self.model)}"
+
+    def open(self) -> None:
+        self._ws = _ws_sync_connect(self.url, _headers(self.api_key), max_size=None, ping_interval=20, ping_timeout=30)
+        first = json.loads(self._ws.recv())
+        if first.get("type") == "error":
+            raise RuntimeError(f"Mistral STT error: {first.get('error')}")
+        if first.get("type") != "session.created":
+            raise RuntimeError(f"Mistral STT: expected session.created, got {first.get('type')}")
+        session: Dict[str, Any] = {
+            "audio_format": {"encoding": "pcm_s16le", "sample_rate": self.sample_rate},
+            "target_streaming_delay_ms": self.delay_ms,
+        }
+        if self.language:
+            session["language"] = self.language
+        if self.context_bias:
+            session["context_bias"] = list(self.context_bias)
+        self._ws.send(json.dumps({"type": "session.update", "session": session}))
+        threading.Thread(target=self._read_loop, daemon=True).start()
+
+    def _read_loop(self) -> None:
+        try:
+            for raw in self._ws:
+                event = json.loads(raw)
+                etype = event.get("type")
+                if etype == "transcription.text.delta":
+                    with self._lock:
+                        self._partial += event.get("text") or ""
+                elif etype == "transcription.done":
+                    with self._lock:
+                        self._final = event.get("text") or self._partial
+                    self._done.set()
+                    break
+                elif etype == "error":
+                    with self._lock:
+                        self._error = str(event.get("error"))
+                    self._done.set()
+                    break
+        except Exception as exc:
+            with self._lock:
+                if self._error is None:
+                    self._error = str(exc)
+            self._done.set()
+
+    def push_audio(self, chunk: bytes) -> None:
+        self._ws.send(json.dumps({"type": "input_audio.append", "audio": base64.b64encode(chunk).decode()}))
+
+    def partial_transcript(self) -> str:
+        with self._lock:
+            return self._partial
+
+    def finalize(self, timeout: float = 20.0) -> Dict[str, Any]:
+        try:
+            self._ws.send(json.dumps({"type": "input_audio.end"}))
+        except Exception:
+            pass
+        self._done.wait(timeout)
+        with self._lock:
+            if self._error:
+                return {"success": False, "transcript": "", "provider": self.provider, "error": self._error}
+            return {"success": True, "transcript": (self._final or self._partial).strip(), "provider": self.provider}
+
+    def close(self) -> None:
+        if self._ws is not None:
+            try:
+                self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
+
+
+def batch_transcribe(
+    *,
+    base_url: str,
+    model: str,
+    api_key: str,
+    file_path: str,
+    provider: str = "voxtral-realtime",
+    language: str = "",
+    context_bias: tuple = (),
+    diarize: bool = False,
+    timeout: int = 180,
+) -> Dict[str, Any]:
+    """POST /v1/audio/transcriptions (multipart) and return the transcription envelope."""
+    url = base_url.rstrip("/") + "/v1/audio/transcriptions"
+    boundary = "----voxtral" + uuid.uuid4().hex
+    with open(file_path, "rb") as fh:
+        file_bytes = fh.read()
+    filename = file_path.rsplit("/", 1)[-1] or "audio.wav"
+    fields = [("model", model), ("diarize", "true" if diarize else "false")]
+    if language:
+        fields.append(("language", language))
+    if context_bias:
+        fields.append(("context_bias", ", ".join(context_bias)))
+    parts = []
+    for name, value in fields:
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
+    parts.append(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        f"Content-Type: application/octet-stream\r\n\r\n".encode() + file_bytes + b"\r\n"
+    )
+    parts.append(f"--{boundary}--\r\n".encode())
+    body = b"".join(parts)
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+        return {"success": True, "transcript": str(payload.get("text") or ""), "provider": provider}
+    except urllib.error.HTTPError as exc:
+        detail = exc.read()[:500].decode("utf-8", "replace")
+        return {"success": False, "transcript": "", "provider": provider,
+                "error": f"Mistral transcribe HTTP {exc.code}: {detail}"}
+    except Exception as exc:
+        return {"success": False, "transcript": "", "provider": provider, "error": str(exc)}
 
 
 def batch_speech(
