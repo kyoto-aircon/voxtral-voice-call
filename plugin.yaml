@@ -115,8 +115,8 @@ config_schema:
     type: secret
     env: MISTRAL_API_KEY
     label: "Mistral API key"
-    description: "Voxtral 3 STT/TTS key (stored in ~/.hermes/.env as MISTRAL_API_KEY)"
-    required: true
+    description: "Voxtral 3 STT/TTS key (lives in ~/.hermes/.env as MISTRAL_API_KEY, not in config.yaml)"
+    required: false
   mistral_base_url:
     type: str
     default: "https://api.mistral.ai"

@@ -37,6 +37,12 @@ def _plugin_settings() -> dict:
         return {}
 
 
+def plugin_setting(key: str, default: Any = "") -> Any:
+    """One key from ``plugins.entries.voxtral-voice-call.settings`` (the plugin settings UI)."""
+    val = _plugin_settings().get(key)
+    return default if val is None or str(val).strip() == "" else val
+
+
 def _csv(raw: Any) -> list[str]:
     if isinstance(raw, (list, tuple)):
         return [str(v).strip() for v in raw if str(v).strip()]

@@ -152,6 +152,7 @@ class RealtimeTTSSession:
         self.voice = voice
         self.sample_rate = sample_rate
         self._ws = None
+        self._broken = False
 
     @property
     def url(self) -> str:
@@ -177,11 +178,18 @@ class RealtimeTTSSession:
         logger.info("[voxtral] TTS realtime session ready: %s", updated.get("type"))
 
     def healthy(self) -> bool:
-        return self._ws is not None
+        return self._ws is not None and not self._broken
 
     def stream_sentence(self, text: str) -> Iterator[bytes]:
-        """Yield int16 mono PCM at 24 kHz for one sentence on the persistent session."""
-        if self._ws is None:
+        """Yield int16 mono PCM at ``sample_rate`` for one sentence on the persistent session."""
+        try:
+            yield from self._stream_sentence(text)
+        except Exception:
+            self._broken = True  # dead socket (e.g. server killed the idle session): never re-pool
+            raise
+
+    def _stream_sentence(self, text: str) -> Iterator[bytes]:
+        if self._ws is None or self._broken:
             self._connect()
         assert self._ws is not None
         logger.debug("[voxtral] TTS sentence (%d chars): %s", len(text), text[:80])
@@ -210,6 +218,7 @@ class RealtimeTTSSession:
             logger.warning("[voxtral] TTS WS closed mid-sentence after %d chunks", chunks)
 
     def close(self) -> None:
+        self._broken = True
         if self._ws is not None:
             try:
                 self._ws.close()

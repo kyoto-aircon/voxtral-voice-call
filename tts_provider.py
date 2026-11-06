@@ -28,6 +28,7 @@ from .settings import (
     DEFAULT_TTS_REALTIME_MODEL,
     DEFAULT_TTS_SAMPLE_RATE,
     DEFAULT_TTS_VOICE,
+    plugin_setting,
 )
 from .voxtral import RealtimeTTSPool, RealtimeTTSSession, batch_speech, list_account_voices, mistral_api_key
 
@@ -140,8 +141,9 @@ class VoxtralRealtimeTTSProvider(TTSProvider):
 
     @property
     def stream_sample_rate(self) -> int:
-        with contextlib.suppress(ValueError):
-            return int(platform_gate_env("VOICE_CALL_TTS_SAMPLE_RATE", str(DEFAULT_TTS_SAMPLE_RATE)))
+        raw = platform_gate_env("VOICE_CALL_TTS_SAMPLE_RATE", "") or plugin_setting("tts_sample_rate", "")
+        with contextlib.suppress(ValueError, TypeError):
+            return int(raw)
         return DEFAULT_TTS_SAMPLE_RATE
 
     def is_available(self) -> bool:
@@ -156,10 +158,11 @@ class VoxtralRealtimeTTSProvider(TTSProvider):
         ]
 
     def default_model(self) -> Optional[str]:
-        return platform_gate_env("VOICE_CALL_TTS_MODEL", DEFAULT_TTS_REALTIME_MODEL) or DEFAULT_TTS_REALTIME_MODEL
+        return platform_gate_env("VOICE_CALL_TTS_MODEL", "") or plugin_setting("tts_model", "") or DEFAULT_TTS_REALTIME_MODEL
 
     def default_voice(self) -> Optional[str]:
-        return resolve_voice_id(platform_gate_env("VOICE_CALL_TTS_VOICE", DEFAULT_TTS_VOICE) or DEFAULT_TTS_VOICE)
+        raw = platform_gate_env("VOICE_CALL_TTS_VOICE", "") or plugin_setting("tts_voice", "") or DEFAULT_TTS_VOICE
+        return resolve_voice_id(raw)
 
     def list_voices(self) -> List[Dict[str, Any]]:
         voices = [{"id": vid, "display": label} for vid, label in VOXTRAL3_VOICES]
@@ -176,7 +179,8 @@ class VoxtralRealtimeTTSProvider(TTSProvider):
         }
 
     def _base_url(self) -> str:
-        return (platform_gate_env("VOICE_CALL_MISTRAL_BASE_URL", "https://api.mistral.ai") or "https://api.mistral.ai").rstrip("/")
+        raw = platform_gate_env("VOICE_CALL_MISTRAL_BASE_URL", "") or plugin_setting("mistral_base_url", "") or "https://api.mistral.ai"
+        return str(raw).rstrip("/")
 
     def synthesize(
         self, text: str, output_path: str, *, voice: Optional[str] = None, model: Optional[str] = None,
@@ -186,7 +190,7 @@ class VoxtralRealtimeTTSProvider(TTSProvider):
         path = Path(output_path)
         if fmt != format and path.suffix.lstrip(".") != fmt:
             path = path.with_suffix(f".{fmt}")
-        voice_id = resolve_voice_id(voice or platform_gate_env("VOICE_CALL_TTS_VOICE_ID", "") or self.default_voice())
+        voice_id = resolve_voice_id(voice or platform_gate_env("VOICE_CALL_TTS_VOICE_ID", "") or plugin_setting("tts_voice_id", "") or self.default_voice())
         data = batch_speech(
             base_url=self._base_url(),
             model=model or platform_gate_env("VOICE_CALL_TTS_BATCH_MODEL", DEFAULT_TTS_BATCH_MODEL) or DEFAULT_TTS_BATCH_MODEL,
@@ -209,11 +213,12 @@ class VoxtralRealtimeTTSProvider(TTSProvider):
         key = (model or self.default_model(), resolve_voice_id(voice or self.default_voice()), self.stream_sample_rate)
         pool = _pool_for(key, self._base_url(), mistral_api_key())
         session = pool.acquire()
-        logger.info("[voxtral] tts stream() sentence (%d chars) via pool idle=%d", len(text), len(pool._idle))
+        logger.info("[voxtral] tts stream() sentence (%d chars) voice=%s via pool idle=%d", len(text), key[1], len(pool._idle))
         try:
             yield from session.stream_sentence(text)
         except Exception as exc:
-            logger.error("[voxtral] tts stream() failed: %s", exc, exc_info=True)
+            logger.error("[voxtral] tts stream() failed (voice=%s, evicting pooled socket): %s", key[1], exc)
+            session.close()  # dead socket: release() drops it instead of re-pooling
             raise
         finally:
             pool.release(session)
