@@ -105,5 +105,5 @@ optional_env:
     prompt: "TTS sample rate"
     password: false
 python_dependencies:
-  - aiohttp
-  - websockets
+  - aiohttp>=3.9,<4
+  - websockets>=12,<16
