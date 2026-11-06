@@ -7,10 +7,11 @@ surface — no Twilio needed**:
   and Discord-voice utterances, plus live streaming sessions (`stt.streaming: true`) for
   Desktop/CLI voice chat: Voxtral Mini Transcribe Realtime 3 over websocket, 16 kHz PCM in,
   partial transcripts out.
-- **TTS provider `voxtral-realtime`** (`tts.provider`) — Voxtral Mini TTS Realtime 3 streaming
-  PCM (~90 ms time-to-first-audio), so Discord voice replies, Desktop speak-stream, and voice
-  bubbles are spoken sentence-by-sentence while the LLM is still generating
-  (`streams_pcm` opts into the gateway's streaming-TTS consumer).
+- **TTS provider `voxtral-realtime`** (`tts.provider`) — Voxtral Mini TTS 3 over a **pool of
+  persistent realtime websockets** (per model/voice), so replies start ~90 ms after each
+  sentence is generated — gpt-live-style, no per-sentence reconnect. `streams_pcm` opts into
+  the gateway's streaming-TTS consumer, covering Discord voice replies, Desktop speak-stream,
+  and voice bubbles.
 - **Optional phone-call adapter** (`voice-call` platform, only active when `TWILIO_*` env is
   set) — answers calls on a Twilio number: caller audio streams to Voxtral Mini Transcribe
   Realtime 3 with server-side turn detection, each turn runs through the Hermes agent on a
@@ -30,15 +31,15 @@ tts:
   provider: voxtral-realtime
 voice:
   auto_tts: true           # speak replies aloud on voice turns
+  silence_duration: 1.2    # snappier turn-end (default 3.0)
 ```
 
 - **Discord**: `/voice join` in a voice channel — utterances are transcribed by
   `voxtral-realtime` and replies are spoken into the channel via the gateway's streaming-TTS
   contract (barge-in supported).
-- **Desktop / CLI voice chat**: chained voice mode picks up the same two providers
-  (`stt.streaming` + `tts.provider`), so talking to Hermes on Desktop uses Voxtral 3 end to
-  end. (The `hermes-live-voice` catalog plugin is a separate OpenAI gpt-live lane — not needed
-  here.)
+- **Desktop / CLI voice chat**: chained voice mode (`voice.voice_chat_mode: chained`, the
+  default) picks up the same two providers — mic → live STT → Hermes agent → sentence-streamed
+  TTS, with playback barge-in. `gpt-live` mode is OpenAI-only; not needed here.
 - **Any other gateway with voice** (voice messages, voice bubbles): `stt.provider` +
   `tts.provider` cover them.
 
@@ -46,6 +47,27 @@ voice:
 
 ```dotenv
 MISTRAL_API_KEY=...   # template already in ~/.hermes/.env; console.mistral.ai
+```
+
+### Switch the voice
+
+Pick any Voxtral 3 preset in the Desktop TTS voice dropdown, or from a terminal:
+
+```bash
+hermes config set tts.voice gb_jane_neutral     # e.g. en_paul_happy, fr_marie_neutral, voice_3150 (James, en-US), ...
+```
+
+The TTS connection pool keeps one persistent websocket per voice, so switching is instant — no
+reconnect penalty. Full preset list: `VOXTRAL3_VOICES` in `tts_provider.py`.
+
+### Logs
+
+Plugin logs under the `voxtral-voice-call` logger (WS connect/session, per-sentence chunk
+counts, error events with full payload, HTTP codes — never the API key). After reproducing an
+issue:
+
+```bash
+grep -i voxtral ~/.hermes/logs/gui.log ~/.hermes/logs/gateway.log ~/.hermes/logs/agent.log ~/.hermes/logs/errors.log | tail -100
 ```
 
 ## Optional: real phone calls via Twilio
@@ -145,8 +167,8 @@ per-minute telephony + media. Set `VOICE_CALL_MAX_CALL_SECONDS` and the allowlis
 - Transport is Twilio Media Streams; a LiveKit transport (Mistral's voice-agent SDK style) can
   be added behind a `transport:` config key later.
 - Whole-file auto-TTS fallback (`send_voice`) accepts PCM WAV only.
-- Realtime TTS websocket event field names (`speech.audio.delta.audio` as base64 float32) follow
-  the public preview protocol; if Mistral renames fields in GA, only `voxtral.py` changes.
+- Realtime wire field names follow the Voxtral 3 public-preview protocol as pinned by the
+  official SDK / LiveKit plugin; if Mistral renames fields at GA, only `voxtral.py` changes.
 
 ## Development
 

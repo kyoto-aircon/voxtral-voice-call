@@ -8,13 +8,15 @@ with ``session.update`` (``streaming_mode``/``response_format``/``voice``) / ``i
 ``input_text.flush`` and ``speech.audio.delta`` (``audio_data`` = base64 float32 PCM, 24 kHz mono)
 until ``speech.audio.done``; batch TTS at ``POST /v1/audio/speech`` (``response_format`` +
 base64 ``audio_data`` in the response). Auth is always ``Authorization: Bearer MISTRAL_API_KEY``,
-with the key read profile-scoped from the Hermes .env.
+with the key read profile-scoped from the Hermes .env. Logs under logger "voxtral-voice-call"
+(WS connect/session, per-sentence chunk counts, error events, HTTP codes) - never the key.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import logging
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,6 +28,8 @@ import threading
 from gateway.platforms._shared import get_scoped_secret
 
 from .audio import float32_to_pcm16
+
+logger = logging.getLogger("voxtral-voice-call")
 
 
 def mistral_api_key() -> str:
@@ -154,9 +158,11 @@ class RealtimeTTSSession:
         return f"{ws_base(self.base_url)}/v1/audio/speech/realtime?model={urllib.parse.quote(self.model)}"
 
     def _connect(self) -> None:
+        logger.info("[voxtral] TTS realtime WS connecting: %s model=%s voice=%s", self.url.split("?")[0], self.model, self.voice)
         self._ws = _ws_sync_connect(self.url, _headers(self.api_key), max_size=None, ping_interval=15, ping_timeout=30)
         first = json.loads(self._ws.recv())
         if first.get("type") == "error":
+            logger.error("[voxtral] TTS realtime open error: %s", first.get("error"))
             raise RuntimeError(f"Mistral TTS error: {first.get('error')}")
         if first.get("type") != "session.created":
             raise RuntimeError(f"Mistral TTS: expected session.created, got {first.get('type')}")
@@ -166,7 +172,9 @@ class RealtimeTTSSession:
         }))
         updated = json.loads(self._ws.recv())
         if updated.get("type") == "error":
+            logger.error("[voxtral] TTS session.update rejected: %s", updated.get("error"))
             raise RuntimeError(f"Mistral TTS session error: {updated.get('error')}")
+        logger.info("[voxtral] TTS realtime session ready: %s", updated.get("type"))
 
     def healthy(self) -> bool:
         return self._ws is not None
@@ -176,20 +184,30 @@ class RealtimeTTSSession:
         if self._ws is None:
             self._connect()
         assert self._ws is not None
+        logger.debug("[voxtral] TTS sentence (%d chars): %s", len(text), text[:80])
         self._ws.send(json.dumps({"type": "input_text.append", "text": text}))
         self._ws.send(json.dumps({"type": "input_text.flush"}))
+        chunks = 0
+        total = 0
         for raw in self._ws:
             event = json.loads(raw)
             etype = event.get("type")
             if etype == "speech.audio.delta":
                 payload = event.get("audio_data")
                 if payload:
-                    yield float32_to_pcm16(base64.b64decode(payload))
+                    pcm = float32_to_pcm16(base64.b64decode(payload))
+                    chunks += 1
+                    total += len(pcm)
+                    yield pcm
             elif etype == "speech.audio.done":
+                logger.info("[voxtral] TTS sentence done: %d chunks, %d bytes PCM", chunks, total)
                 break
             elif etype == "error":
+                logger.error("[voxtral] TTS stream error event: %s", event)
                 self.close()
                 raise RuntimeError(f"Mistral TTS error: {event.get('error')}")
+        else:
+            logger.warning("[voxtral] TTS WS closed mid-sentence after %d chunks", chunks)
 
     def close(self) -> None:
         if self._ws is not None:
@@ -260,9 +278,11 @@ class RealtimeSTTSyncSession:
         return f"{ws_base(self.base_url)}/v1/audio/transcriptions/realtime?model={urllib.parse.quote(self.model)}"
 
     def open(self) -> None:
+        logger.info("[voxtral] STT realtime WS connecting: %s model=%s rate=%d delay=%dms", self.url.split("?")[0], self.model, self.sample_rate, self.delay_ms)
         self._ws = _ws_sync_connect(self.url, _headers(self.api_key), max_size=None, ping_interval=20, ping_timeout=30)
         first = json.loads(self._ws.recv())
         if first.get("type") == "error":
+            logger.error("[voxtral] STT realtime open error: %s", first.get("error"))
             raise RuntimeError(f"Mistral STT error: {first.get('error')}")
         if first.get("type") != "session.created":
             raise RuntimeError(f"Mistral STT: expected session.created, got {first.get('type')}")
@@ -291,11 +311,13 @@ class RealtimeSTTSyncSession:
                     self._done.set()
                     break
                 elif etype == "error":
+                    logger.error("[voxtral] STT stream error event: %s", event)
                     with self._lock:
                         self._error = str(event.get("error"))
                     self._done.set()
                     break
         except Exception as exc:
+            logger.warning("[voxtral] STT read loop ended: %s", exc)
             with self._lock:
                 if self._error is None:
                     self._error = str(exc)
@@ -398,12 +420,17 @@ def batch_speech(
         url, data=body, method="POST",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
     )
+    logger.info("[voxtral] batch speech: model=%s voice=%s format=%s text=%d chars", model, voice_id, response_format, len(text))
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
-        return base64.b64decode(payload["audio_data"])
+        audio = base64.b64decode(payload["audio_data"])
+        logger.info("[voxtral] batch speech ok: %d bytes", len(audio))
+        return audio
     except urllib.error.HTTPError as exc:
         detail = exc.read()[:500].decode("utf-8", "replace")
+        logger.error("[voxtral] batch speech HTTP %s: %s", exc.code, detail)
         raise RuntimeError(f"Mistral speech HTTP {exc.code}: {detail}") from exc
     except KeyError as exc:
+        logger.error("[voxtral] batch speech response missing audio_data: %s", exc)
         raise RuntimeError(f"Mistral speech response missing audio_data: {exc}") from exc

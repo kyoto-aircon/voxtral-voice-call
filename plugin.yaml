@@ -5,12 +5,14 @@ version: 0.1.0
 description: >
   Give Hermes a Voxtral 3 voice on every voice-capable surface, no Twilio needed:
   registers a `voxtral-realtime` STT provider (batch + live streaming sessions) and a
-  `voxtral-realtime` TTS provider (realtime streaming PCM), so Discord voice channels
-  (/voice join), Desktop/CLI voice chat, and voice messages speak and listen with Voxtral 3
-  via `stt.provider` / `tts.provider`. Optionally also answers real phone calls on a Twilio
-  number (voice-call platform adapter: TwiML webhook + Media Streams, per-call agent
-  sessions, barge-in). The Mistral API key is read from the Hermes .env (MISTRAL_API_KEY,
-  already templated there). Runs entirely as a standalone plugin - no Hermes core changes.
+  `voxtral-realtime` TTS provider (realtime streaming PCM over persistent pooled websockets),
+  so Discord voice channels (/voice join), Desktop/CLI voice chat, and voice messages speak
+  and listen with Voxtral 3 via `stt.provider` / `tts.provider`. Voice is switchable at
+  runtime via `tts.voice` (Voxtral 3 preset list in tts_provider.py). Optionally also answers
+  real phone calls on a Twilio number (voice-call platform adapter: TwiML webhook + Media
+  Streams, per-call agent sessions, barge-in). The Mistral API key is read from the Hermes
+  .env (MISTRAL_API_KEY, already templated there). Runs entirely as a standalone plugin -
+  no Hermes core changes.
 author: Hermes community
 requires_env:
   - name: MISTRAL_API_KEY
@@ -89,12 +91,12 @@ optional_env:
     prompt: "Context bias terms"
     password: false
   - name: VOICE_CALL_TTS_MODEL
-    description: "Voxtral realtime TTS model (default voxtral-mini-tts-realtime-3)"
-    prompt: "Realtime TTS model"
+    description: "Voxtral TTS 3 model for the realtime websocket + batch endpoint (default voxtral-mini-tts-3-0)"
+    prompt: "TTS 3 model"
     password: false
   - name: VOICE_CALL_TTS_VOICE
-    description: "Realtime TTS voice name (default en_paul_neutral); used by the streaming path and settable via tts.voice"
-    prompt: "Realtime TTS voice"
+    description: "Realtime TTS voice preset (default en_paul_neutral); also settable via tts.voice - see VOXTRAL3_VOICES in tts_provider.py"
+    prompt: "TTS voice preset"
     password: false
   - name: VOICE_CALL_TTS_VOICE_ID
     description: "Voxtral 3 preset voice for the batch /v1/audio/speech endpoint (default en_paul_neutral)"

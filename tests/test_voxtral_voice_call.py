@@ -70,7 +70,7 @@ def test_settings_defaults(monkeypatch):
     s = _settings({})
     assert s.webhook_port == vc_settings.DEFAULT_WEBHOOK_PORT
     assert s.stt_model == "voxtral-mini-transcribe-realtime-3-0"
-    assert s.tts_realtime_model == "voxtral-mini-tts-realtime-3"
+    assert s.tts_realtime_model == "voxtral-mini-tts-3-0"
     assert s.mistral_base_url == "https://api.mistral.ai"
     assert s.caller_allowed("+15551234567") is True
 
