@@ -8,11 +8,12 @@ description: >
   `voxtral-realtime` TTS provider (realtime streaming PCM over persistent pooled websockets),
   so Discord voice channels (/voice join), Desktop/CLI voice chat, and voice messages speak
   and listen with Voxtral 3 via `stt.provider` / `tts.provider`. Voice is switchable at
-  runtime via `tts.voice` (full Voxtral 3 preset list with Studio-style names in
-  tts_provider.py). Optionally also answers real phone calls on a Twilio number (voice-call
-  platform adapter: TwiML webhook + Media Streams, per-call agent sessions, barge-in). The
-  Mistral API key is read from the Hermes .env (MISTRAL_API_KEY, already templated there).
-  Runs entirely as a standalone plugin - no Hermes core changes.
+  runtime via `tts.voice` (full Voxtral 3 preset list with Studio-style names plus clones
+  made in Mistral Studio, in tts_provider.py). Optionally also answers real phone calls on
+  a Twilio number (voice-call platform adapter: TwiML webhook + Media Streams, per-call
+  agent sessions, barge-in). The Mistral API key is read from the Hermes .env
+  (MISTRAL_API_KEY, already templated there). Runs entirely as a standalone plugin -
+  no Hermes core changes.
 author: Hermes community
 requires_env:
   - name: MISTRAL_API_KEY
@@ -149,7 +150,7 @@ config_schema:
     type: str
     default: "en_paul_neutral (Paul, neutral en)"
     label: "Voice"
-    description: "Voxtral 3 preset voice (Studio-style name); raw ids also accepted; one persistent websocket is kept per voice"
+    description: "Voxtral 3 preset (Studio-style name or raw id); clones made in Mistral Studio (My voices, voice_<n> ids) appear automatically in the TTS voice dropdown and are accepted here too; one persistent websocket is kept per voice"
     choices: ["en_paul_neutral (Paul, neutral en)", "en_paul_happy (Paul, happy en)", "en_paul_confident (Paul, confident en)", "gb_jane_neutral (Jane, neutral en-GB)", "gb_oliver_neutral (Oliver, neutral en-GB)", "fr_marie_neutral (Marie, neutral fr)", "James (en-US)", "Margaret (en-US)", "Rob (en-US)", "Sheila (en-US)", "David (en-GB)", "Fred (en-GB)", "Harriet (en-GB)", "Howard (en-GB)", "Hugo (en-GB)", "Mary (en-GB)", "Sky (en-GB)", "Elena (es)", "Camille (fr)", "Lea (fr)", "Manon (fr)", "Marie (fr)", "Ananya (hi)", "Himanshu (hi)", "Olivia (hu)", "Lorenzo (it)", "Haruto (ja)", "Jin (ko)", "Sung (ko)", "Lotte (nl)", "Lars (no)", "Leon (pl)", "Gabriela (pt)", "Irina (ro)", "Tatiana (ru)", "Oran (tr)", "Taras (uk)", "Huong (vi)", "Mei (zh)", "Maryam (ar)", "Jordi (ca)", "Heidi (de)"]
   tts_voice_id:
     type: str
