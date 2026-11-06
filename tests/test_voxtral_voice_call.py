@@ -305,6 +305,90 @@ def test_resolve_voice_id_accepts_ids_and_labels():
     assert len(VOXTRAL3_VOICES) >= 35
 
 
+def test_list_voices_includes_studio_clones(monkeypatch):
+    from voxtral_voice_call import tts_provider as tp
+    tp._CUSTOM_VOICES_CACHE[0] = 0.0
+    tp._CUSTOM_VOICES_CACHE[1] = []
+    monkeypatch.setattr(tp, "list_account_voices",
+                        lambda **kw: [{"id": "voice_9999", "name": "My Clone", "kind": "custom"},
+                                      {"id": "voice_1788", "name": "David", "kind": "preset"}])
+    hermes_shared._SECRETS["MISTRAL_API_KEY"] = "k"
+    voices = tp.VoxtralRealtimeTTSProvider().list_voices()
+    ids = [v["id"] for v in voices]
+    assert "voice_9999" in ids
+    assert "voice_1788" in ids and ids.count("voice_1788") == 1  # preset not duplicated
+    clone = next(v for v in voices if v["id"] == "voice_9999")
+    assert clone["display"] == "My Clone (clone)"
+    hermes_shared._SECRETS.clear()
+    tp._CUSTOM_VOICES_CACHE[0] = 0.0
+    tp._CUSTOM_VOICES_CACHE[1] = []
+
+
+def test_default_voice_reads_plugin_settings(monkeypatch):
+    import voxtral_voice_call.settings as st
+    from voxtral_voice_call import tts_provider as tp
+    monkeypatch.delenv("VOICE_CALL_TTS_VOICE", raising=False)
+    monkeypatch.setattr(st, "_plugin_settings", lambda: {"tts_voice": "Tatiana (ru)"})
+    assert tp.VoxtralRealtimeTTSProvider().default_voice() == "voice_3132"
+
+
+def test_broken_pooled_socket_is_evicted_and_replaced(monkeypatch):
+    import queue as queue_mod
+    import struct
+    from voxtral_voice_call import tts_provider as tp
+
+    connects = []
+
+    class DeadOnSecondWS:
+        def __init__(self):
+            self._q = queue_mod.Queue()
+            self._q.put(json.dumps({"type": "session.created", "session": {}}))
+            self._q.put(json.dumps({"type": "session.updated", "session": {}}))
+            self.n = 0
+
+        def recv(self):
+            return self._q.get(timeout=5)
+
+        def send(self, data):
+            msg = json.loads(data)
+            if msg.get("type") == "input_text.flush":
+                self.n += 1
+                if self.n == 1:
+                    self._q.put(json.dumps({"type": "speech.audio.delta",
+                                             "audio_data": base64.b64encode(struct.pack("<2f", 0.5, -0.5)).decode()}))
+                    self._q.put(json.dumps({"type": "speech.audio.done"}))
+                else:
+                    raise ConnectionError("sent 1011 keepalive ping timeout")
+
+        def __iter__(self):
+            while True:
+                item = self._q.get(timeout=5)
+                yield item
+                if json.loads(item).get("type") == "speech.audio.done":
+                    return
+
+        def close(self):
+            pass
+
+    def fake_connect(*a, **kw):
+        ws = DeadOnSecondWS()
+        connects.append(ws)
+        return ws
+
+    monkeypatch.setattr(voxtral_mod, "_ws_sync_connect", fake_connect)
+    hermes_shared._SECRETS["MISTRAL_API_KEY"] = "k"
+    tp._POOLS.clear()
+    provider = tp.VoxtralRealtimeTTSProvider()
+    assert len(b"".join(provider.stream("First."))) == 4
+    with pytest.raises(ConnectionError):
+        list(provider.stream("Second."))
+    assert len(connects) == 1  # dead socket evicted, not reused
+    assert len(b"".join(provider.stream("Third."))) == 4  # fresh socket works
+    assert len(connects) == 2
+    hermes_shared._SECRETS.clear()
+    tp._POOLS.clear()
+
+
 def test_tts_pool_reuses_persistent_connection(monkeypatch):
     import queue as queue_mod
     import struct
