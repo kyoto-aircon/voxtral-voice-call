@@ -5,7 +5,8 @@ Registered via ``ctx.register_tts_provider``; selected with ``tts.provider: voxt
 ``streams_pcm`` opts into the gateway's streaming-TTS consumer, so voice-call replies are
 spoken sentence-by-sentence while the LLM is still generating. Synthesis runs over a POOL of
 persistent realtime-TTS websockets (one per model/voice), so per-sentence time-to-first-audio
-stays at the model's ~90 ms instead of paying a reconnect per sentence.
+stays at the model's ~90 ms instead of paying a reconnect per sentence. Voices created in
+Mistral Studio (clones, ``voice_<n>`` ids) are listed dynamically via GET /v1/audio/voices.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from .settings import (
     DEFAULT_TTS_SAMPLE_RATE,
     DEFAULT_TTS_VOICE,
 )
-from .voxtral import RealtimeTTSPool, RealtimeTTSSession, batch_speech, mistral_api_key
+from .voxtral import RealtimeTTSPool, RealtimeTTSSession, batch_speech, list_account_voices, mistral_api_key
 
 VALID_OUTPUT_FORMATS = frozenset({"pcm", "wav", "mp3", "flac", "opus"})
 
@@ -84,7 +85,7 @@ _VOICE_LABELS = {label: vid for vid, label in VOXTRAL3_VOICES}
 
 
 def resolve_voice_id(value: Optional[str]) -> str:
-    """Resolve a configured voice (preset id or Studio-style label) to the API id."""
+    """Resolve a configured voice (preset id, Studio-style label, or clone id) to the API id."""
     v = (value or "").strip()
     if not v:
         return DEFAULT_TTS_VOICE
@@ -94,6 +95,28 @@ def resolve_voice_id(value: Optional[str]) -> str:
 
 _POOLS: Dict[tuple, RealtimeTTSPool] = {}
 _POOLS_LOCK = threading.Lock()
+
+# (monotonic fetched_at, custom voices) — the picker calls list_voices on every paint, so cache.
+_CUSTOM_VOICES_CACHE: list = [0.0, []]
+_CUSTOM_VOICES_TTL = 60.0
+
+
+def _custom_voices(base_url: str, api_key: str) -> list:
+    import time as _time
+    now = _time.monotonic()
+    if _CUSTOM_VOICES_CACHE[1] and now - _CUSTOM_VOICES_CACHE[0] < _CUSTOM_VOICES_TTL:
+        return _CUSTOM_VOICES_CACHE[1]
+    try:
+        account = list_account_voices(base_url=base_url, api_key=api_key)
+        customs = [v for v in account if v["id"] not in _VOICE_IDS]
+        _CUSTOM_VOICES_CACHE[0] = now
+        _CUSTOM_VOICES_CACHE[1] = customs
+        if customs:
+            logger.info("[voxtral] %d custom/cloned voice(s) from Mistral account", len(customs))
+        return customs
+    except Exception as exc:
+        logger.debug("[voxtral] account voice list failed (presets still shown): %s", exc)
+        return _CUSTOM_VOICES_CACHE[1]
 
 
 def _pool_for(key: tuple, base_url: str, api_key: str) -> RealtimeTTSPool:
@@ -139,7 +162,10 @@ class VoxtralRealtimeTTSProvider(TTSProvider):
         return resolve_voice_id(platform_gate_env("VOICE_CALL_TTS_VOICE", DEFAULT_TTS_VOICE) or DEFAULT_TTS_VOICE)
 
     def list_voices(self) -> List[Dict[str, Any]]:
-        return [{"id": vid, "display": label} for vid, label in VOXTRAL3_VOICES]
+        voices = [{"id": vid, "display": label} for vid, label in VOXTRAL3_VOICES]
+        for custom in _custom_voices(self._base_url(), mistral_api_key()):
+            voices.append({"id": custom["id"], "display": f"{custom['name']} (clone)"})
+        return voices
 
     def get_setup_schema(self) -> dict:
         return {
