@@ -294,6 +294,7 @@ def test_tts_pool_reuses_persistent_connection(monkeypatch):
         def __init__(self):
             self._q = queue_mod.Queue()
             self._q.put(json.dumps({"type": "session.created", "session": {}}))
+            self._q.put(json.dumps({"type": "session.updated", "session": {}}))
 
         def recv(self):
             return self._q.get(timeout=5)
@@ -303,7 +304,7 @@ def test_tts_pool_reuses_persistent_connection(monkeypatch):
             if msg.get("type") == "input_text.flush":
                 pcm = struct.pack("<2f", 0.5, -0.5)
                 self._q.put(json.dumps({"type": "speech.audio.delta",
-                                         "audio": base64.b64encode(pcm).decode()}))
+                                         "audio_data": base64.b64encode(pcm).decode()}))
                 self._q.put(json.dumps({"type": "speech.audio.done"}))
 
         def __iter__(self):

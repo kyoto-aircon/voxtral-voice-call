@@ -97,7 +97,7 @@ optional_env:
     prompt: "Realtime TTS voice"
     password: false
   - name: VOICE_CALL_TTS_VOICE_ID
-    description: "Voice ID for the batch /v1/audio/speech endpoint (default Paul neutral UUID)"
+    description: "Voxtral 3 preset voice for the batch /v1/audio/speech endpoint (default en_paul_neutral)"
     prompt: "Batch TTS voice ID"
     password: false
   - name: VOICE_CALL_TTS_SAMPLE_RATE

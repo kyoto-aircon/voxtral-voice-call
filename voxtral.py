@@ -1,12 +1,13 @@
 """Mistral Voxtral 3 clients: realtime STT websocket, realtime TTS websocket, batch speech over HTTPS.
 
-Protocols follow the Mistral audio docs: realtime STT at
+Protocols follow the Mistral audio docs + SDK ground truth: realtime STT at
 ``wss://<base>/v1/audio/transcriptions/realtime?model=...`` with ``session.created`` /
 ``session.update`` / ``input_audio.append`` / ``transcription.text.delta`` / ``turn.*`` /
 ``transcription.done`` events; realtime TTS at ``wss://<base>/v1/audio/speech/realtime?model=...``
-with ``session.update`` / ``input_text.append`` / ``input_text.flush`` and
-``speech.audio.delta`` (base64 float32 PCM) until ``speech.audio.done``; batch TTS at
-``POST <base>/v1/audio/speech``. Auth is always ``Authorization: Bearer MISTRAL_API_KEY``,
+with ``session.update`` (``streaming_mode``/``response_format``/``voice``) / ``input_text.append`` /
+``input_text.flush`` and ``speech.audio.delta`` (``audio_data`` = base64 float32 PCM, 24 kHz mono)
+until ``speech.audio.done``; batch TTS at ``POST /v1/audio/speech`` (``response_format`` +
+base64 ``audio_data`` in the response). Auth is always ``Authorization: Bearer MISTRAL_API_KEY``,
 with the key read profile-scoped from the Hermes .env.
 """
 
@@ -157,19 +158,21 @@ class RealtimeTTSSession:
         first = json.loads(self._ws.recv())
         if first.get("type") == "error":
             raise RuntimeError(f"Mistral TTS error: {first.get('error')}")
+        if first.get("type") != "session.created":
+            raise RuntimeError(f"Mistral TTS: expected session.created, got {first.get('type')}")
         self._ws.send(json.dumps({
             "type": "session.update",
-            "session": {
-                "voice": self.voice,
-                "audio_format": {"encoding": "pcm_f32le", "sample_rate": self.sample_rate},
-            },
+            "session": {"streaming_mode": "responsive", "response_format": "pcm", "voice": self.voice},
         }))
+        updated = json.loads(self._ws.recv())
+        if updated.get("type") == "error":
+            raise RuntimeError(f"Mistral TTS session error: {updated.get('error')}")
 
     def healthy(self) -> bool:
         return self._ws is not None
 
     def stream_sentence(self, text: str) -> Iterator[bytes]:
-        """Yield int16 mono PCM at ``sample_rate`` for one sentence on the persistent session."""
+        """Yield int16 mono PCM at 24 kHz for one sentence on the persistent session."""
         if self._ws is None:
             self._connect()
         assert self._ws is not None
@@ -179,7 +182,7 @@ class RealtimeTTSSession:
             event = json.loads(raw)
             etype = event.get("type")
             if etype == "speech.audio.delta":
-                payload = event.get("audio")
+                payload = event.get("audio_data")
                 if payload:
                     yield float32_to_pcm16(base64.b64decode(payload))
             elif etype == "speech.audio.done":
@@ -380,18 +383,16 @@ def batch_speech(
     api_key: str,
     text: str,
     voice_id: str,
-    output_format: str = "mp3",
-    sample_rate: int = 24000,
+    response_format: str = "mp3",
     timeout: int = 120,
 ) -> bytes:
-    """POST /v1/audio/speech (batch) and return the audio bytes."""
+    """POST /v1/audio/speech (batch); returns decoded audio bytes (response.audio_data is base64)."""
     url = base_url.rstrip("/") + "/v1/audio/speech"
     body = json.dumps({
         "model": model,
         "input": text,
         "voice_id": voice_id,
-        "output_format": output_format,
-        "sample_rate": sample_rate,
+        "response_format": response_format,
     }).encode()
     req = urllib.request.Request(
         url, data=body, method="POST",
@@ -399,7 +400,10 @@ def batch_speech(
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read()
+            payload = json.loads(resp.read().decode())
+        return base64.b64decode(payload["audio_data"])
     except urllib.error.HTTPError as exc:
         detail = exc.read()[:500].decode("utf-8", "replace")
         raise RuntimeError(f"Mistral speech HTTP {exc.code}: {detail}") from exc
+    except KeyError as exc:
+        raise RuntimeError(f"Mistral speech response missing audio_data: {exc}") from exc

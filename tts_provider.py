@@ -24,11 +24,10 @@ from .settings import (
     DEFAULT_TTS_REALTIME_MODEL,
     DEFAULT_TTS_SAMPLE_RATE,
     DEFAULT_TTS_VOICE,
-    DEFAULT_TTS_VOICE_ID,
 )
 from .voxtral import RealtimeTTSPool, RealtimeTTSSession, batch_speech, mistral_api_key
 
-VALID_OUTPUT_FORMATS = frozenset({"mp3", "wav", "ogg", "opus", "flac", "pcm"})
+VALID_OUTPUT_FORMATS = frozenset({"pcm", "wav", "mp3", "flac", "opus"})
 
 _POOLS: Dict[tuple, RealtimeTTSPool] = {}
 _POOLS_LOCK = threading.Lock()
@@ -78,8 +77,7 @@ class VoxtralRealtimeTTSProvider(TTSProvider):
 
     def list_voices(self) -> List[Dict[str, Any]]:
         return [
-            {"id": "en_paul_neutral", "display": "Paul (neutral, English)"},
-            {"id": DEFAULT_TTS_VOICE_ID, "display": "Paul neutral (batch voice ID)"},
+            {"id": DEFAULT_TTS_VOICE, "display": "Paul (neutral, English) - Voxtral 3 preset"},
         ]
 
     def get_setup_schema(self) -> dict:
@@ -101,17 +99,14 @@ class VoxtralRealtimeTTSProvider(TTSProvider):
         path = Path(output_path)
         if fmt != format and path.suffix.lstrip(".") != fmt:
             path = path.with_suffix(f".{fmt}")
-        voice_id = voice if voice and len(voice) == 36 and "-" in voice else (
-            platform_gate_env("VOICE_CALL_TTS_VOICE_ID", DEFAULT_TTS_VOICE_ID) or DEFAULT_TTS_VOICE_ID
-        )
+        voice_id = voice or platform_gate_env("VOICE_CALL_TTS_VOICE_ID", "") or self.default_voice()
         data = batch_speech(
             base_url=self._base_url(),
             model=model or platform_gate_env("VOICE_CALL_TTS_BATCH_MODEL", DEFAULT_TTS_BATCH_MODEL) or DEFAULT_TTS_BATCH_MODEL,
             api_key=mistral_api_key(),
             text=text,
             voice_id=voice_id,
-            output_format=fmt,
-            sample_rate=self.stream_sample_rate,
+            response_format=fmt,
         )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
