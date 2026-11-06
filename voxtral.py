@@ -132,8 +132,13 @@ class RealtimeSTT:
             self.ws = None
 
 
-class RealtimeTTSStreamer:
-    """Synchronous realtime TTS websocket, for use inside the blocking ``stream()`` generator."""
+class RealtimeTTSSession:
+    """One PERSISTENT realtime TTS websocket, reused across sentences (gpt-live-style latency).
+
+    ``stream_sentence`` sends ``input_text.append`` + ``input_text.flush`` on the already-open
+    session and yields PCM until ``speech.audio.done`` — no reconnect per sentence, so
+    time-to-first-audio stays at the model's ~90 ms instead of paying WS+session setup each time.
+    """
 
     def __init__(self, *, base_url: str, model: str, api_key: str, voice: str, sample_rate: int = 24000) -> None:
         self.base_url = base_url
@@ -141,37 +146,89 @@ class RealtimeTTSStreamer:
         self.api_key = api_key
         self.voice = voice
         self.sample_rate = sample_rate
+        self._ws = None
 
     @property
     def url(self) -> str:
         return f"{ws_base(self.base_url)}/v1/audio/speech/realtime?model={urllib.parse.quote(self.model)}"
 
-    def stream(self, text: str) -> Iterator[bytes]:
-        """Yield int16 mono PCM at ``sample_rate`` for *text*."""
-        with _ws_sync_connect(self.url, _headers(self.api_key), max_size=None, ping_interval=20, ping_timeout=30) as ws:
-            first = json.loads(ws.recv())
-            if first.get("type") == "error":
-                raise RuntimeError(f"Mistral TTS error: {first.get('error')}")
-            ws.send(json.dumps({
-                "type": "session.update",
-                "session": {
-                    "voice": self.voice,
-                    "audio_format": {"encoding": "pcm_f32le", "sample_rate": self.sample_rate},
-                },
-            }))
-            ws.send(json.dumps({"type": "input_text.append", "text": text}))
-            ws.send(json.dumps({"type": "input_text.flush"}))
-            for raw in ws:
-                event = json.loads(raw)
-                etype = event.get("type")
-                if etype == "speech.audio.delta":
-                    payload = event.get("audio")
-                    if payload:
-                        yield float32_to_pcm16(base64.b64decode(payload))
-                elif etype == "speech.audio.done":
-                    break
-                elif etype == "error":
-                    raise RuntimeError(f"Mistral TTS error: {event.get('error')}")
+    def _connect(self) -> None:
+        self._ws = _ws_sync_connect(self.url, _headers(self.api_key), max_size=None, ping_interval=15, ping_timeout=30)
+        first = json.loads(self._ws.recv())
+        if first.get("type") == "error":
+            raise RuntimeError(f"Mistral TTS error: {first.get('error')}")
+        self._ws.send(json.dumps({
+            "type": "session.update",
+            "session": {
+                "voice": self.voice,
+                "audio_format": {"encoding": "pcm_f32le", "sample_rate": self.sample_rate},
+            },
+        }))
+
+    def healthy(self) -> bool:
+        return self._ws is not None
+
+    def stream_sentence(self, text: str) -> Iterator[bytes]:
+        """Yield int16 mono PCM at ``sample_rate`` for one sentence on the persistent session."""
+        if self._ws is None:
+            self._connect()
+        assert self._ws is not None
+        self._ws.send(json.dumps({"type": "input_text.append", "text": text}))
+        self._ws.send(json.dumps({"type": "input_text.flush"}))
+        for raw in self._ws:
+            event = json.loads(raw)
+            etype = event.get("type")
+            if etype == "speech.audio.delta":
+                payload = event.get("audio")
+                if payload:
+                    yield float32_to_pcm16(base64.b64decode(payload))
+            elif etype == "speech.audio.done":
+                break
+            elif etype == "error":
+                self.close()
+                raise RuntimeError(f"Mistral TTS error: {event.get('error')}")
+
+    def close(self) -> None:
+        if self._ws is not None:
+            try:
+                self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
+
+
+class RealtimeTTSPool:
+    """Pool of persistent realtime-TTS websockets keyed by (model, voice, rate); thread-safe.
+
+    The speaker prefetches up to 3 sentences concurrently, so one shared socket would interleave
+    frames — the pool hands each caller its own open session and reuses it afterwards.
+    """
+
+    def __init__(self, factory) -> None:
+        self._factory = factory
+        self._idle: list = []
+        self._lock = threading.Lock()
+
+    def acquire(self):
+        with self._lock:
+            while self._idle:
+                session = self._idle.pop()
+                if session.healthy():
+                    return session
+                session.close()
+        return self._factory()
+
+    def release(self, session) -> None:
+        with self._lock:
+            if session.healthy():
+                self._idle.append(session)
+            else:
+                session.close()
+
+    def close_all(self) -> None:
+        with self._lock:
+            while self._idle:
+                self._idle.pop().close()
 
 
 class RealtimeSTTSyncSession:

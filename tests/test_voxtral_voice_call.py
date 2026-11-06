@@ -283,6 +283,56 @@ def test_provider_stream_empty_text():
     assert list(provider.stream("   ")) == []
 
 
+def test_tts_pool_reuses_persistent_connection(monkeypatch):
+    import queue as queue_mod
+    import struct
+    from voxtral_voice_call import tts_provider as tp
+
+    connects = []
+
+    class FakeTTSWS:
+        def __init__(self):
+            self._q = queue_mod.Queue()
+            self._q.put(json.dumps({"type": "session.created", "session": {}}))
+
+        def recv(self):
+            return self._q.get(timeout=5)
+
+        def send(self, data):
+            msg = json.loads(data)
+            if msg.get("type") == "input_text.flush":
+                pcm = struct.pack("<2f", 0.5, -0.5)
+                self._q.put(json.dumps({"type": "speech.audio.delta",
+                                         "audio": base64.b64encode(pcm).decode()}))
+                self._q.put(json.dumps({"type": "speech.audio.done"}))
+
+        def __iter__(self):
+            while True:
+                item = self._q.get(timeout=5)
+                yield item
+                if json.loads(item).get("type") == "speech.audio.done":
+                    return
+
+        def close(self):
+            pass
+
+    def fake_connect(*a, **kw):
+        ws = FakeTTSWS()
+        connects.append(ws)
+        return ws
+
+    monkeypatch.setattr(voxtral_mod, "_ws_sync_connect", fake_connect)
+    hermes_shared._SECRETS["MISTRAL_API_KEY"] = "k"
+    tp._POOLS.clear()
+    provider = tp.VoxtralRealtimeTTSProvider()
+    out1 = b"".join(provider.stream("First sentence."))
+    out2 = b"".join(provider.stream("Second sentence."))
+    assert len(out1) == 4 and len(out2) == 4
+    assert len(connects) == 1, "expected one persistent websocket reused across sentences"
+    hermes_shared._SECRETS.clear()
+    tp._POOLS.clear()
+
+
 # ---------------------------------------------------------------- stt provider
 
 

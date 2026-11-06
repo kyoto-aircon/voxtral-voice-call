@@ -3,13 +3,16 @@
 Registered via ``ctx.register_tts_provider``; selected with ``tts.provider: voxtral-realtime``
 (or pinned for the gateway streaming path with ``tts.streaming.provider: voxtral-realtime``).
 ``streams_pcm`` opts into the gateway's streaming-TTS consumer, so voice-call replies are
-spoken sentence-by-sentence while the LLM is still generating.
+spoken sentence-by-sentence while the LLM is still generating. Synthesis runs over a POOL of
+persistent realtime-TTS websockets (one per model/voice), so per-sentence time-to-first-audio
+stays at the model's ~90 ms instead of paying a reconnect per sentence.
 """
 
 from __future__ import annotations
 
 import contextlib
 import importlib.util
+import threading
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -23,9 +26,24 @@ from .settings import (
     DEFAULT_TTS_VOICE,
     DEFAULT_TTS_VOICE_ID,
 )
-from .voxtral import RealtimeTTSStreamer, batch_speech, mistral_api_key
+from .voxtral import RealtimeTTSPool, RealtimeTTSSession, batch_speech, mistral_api_key
 
 VALID_OUTPUT_FORMATS = frozenset({"mp3", "wav", "ogg", "opus", "flac", "pcm"})
+
+_POOLS: Dict[tuple, RealtimeTTSPool] = {}
+_POOLS_LOCK = threading.Lock()
+
+
+def _pool_for(key: tuple, base_url: str, api_key: str) -> RealtimeTTSPool:
+    with _POOLS_LOCK:
+        pool = _POOLS.get(key)
+        if pool is None:
+            model, voice, rate = key
+            pool = RealtimeTTSPool(lambda: RealtimeTTSSession(
+                base_url=base_url, model=model, api_key=api_key, voice=voice, sample_rate=rate,
+            ))
+            _POOLS[key] = pool
+        return pool
 
 
 class VoxtralRealtimeTTSProvider(TTSProvider):
@@ -103,14 +121,13 @@ class VoxtralRealtimeTTSProvider(TTSProvider):
         self, text: str, *, voice: Optional[str] = None, model: Optional[str] = None,
         format: str = "pcm", **extra: Any,
     ) -> Iterator[bytes]:
-        """Stream int16 mono PCM at ``stream_sample_rate`` for one sentence of text."""
+        """Stream int16 mono PCM at ``stream_sample_rate`` for one sentence over a pooled WS."""
         if not text or not text.strip():
             return
-        streamer = RealtimeTTSStreamer(
-            base_url=self._base_url(),
-            model=model or self.default_model(),
-            api_key=mistral_api_key(),
-            voice=voice or self.default_voice(),
-            sample_rate=self.stream_sample_rate,
-        )
-        yield from streamer.stream(text)
+        key = (model or self.default_model(), voice or self.default_voice(), self.stream_sample_rate)
+        pool = _pool_for(key, self._base_url(), mistral_api_key())
+        session = pool.acquire()
+        try:
+            yield from session.stream_sentence(text)
+        finally:
+            pool.release(session)
