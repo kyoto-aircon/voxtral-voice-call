@@ -5,7 +5,7 @@ Registered via ``ctx.register_tts_provider``; selected with ``tts.provider: voxt
 ``streams_pcm`` opts into the gateway's streaming-TTS consumer, so voice-call replies are
 spoken sentence-by-sentence while the LLM is still generating. Synthesis runs over a POOL of
 persistent realtime-TTS websockets (one per model/voice), so per-sentence time-to-first-audio
-stays at the model's ~90 ms and switching voices (``tts.voice``) just opens another pooled socket.
+stays at the model's ~90 ms instead of paying a reconnect per sentence.
 """
 
 from __future__ import annotations
@@ -32,23 +32,65 @@ from .voxtral import RealtimeTTSPool, RealtimeTTSSession, batch_speech, mistral_
 
 VALID_OUTPUT_FORMATS = frozenset({"pcm", "wav", "mp3", "flac", "opus"})
 
-# Voxtral 3 preset voices (Voxtral 2 emotion voices also work on v3 models)
+# Voxtral 3 preset voices (ids + Studio-style names/languages) plus the Voxtral 2 emotion
+# voices, which v3 models also accept. (id, label); v2 ids are their own label.
 VOXTRAL3_VOICES = [
-    ("en_paul_neutral", "Paul (neutral, en)"),
-    ("en_paul_happy", "Paul (happy, en)"),
-    ("en_paul_confident", "Paul (confident, en)"),
-    ("gb_jane_neutral", "Jane (neutral, en-GB)"),
-    ("gb_oliver_neutral", "Oliver (neutral, en-GB)"),
-    ("fr_marie_neutral", "Marie (neutral, fr)"),
+    ("en_paul_neutral", "en_paul_neutral (Paul, neutral en)"),
+    ("en_paul_happy", "en_paul_happy (Paul, happy en)"),
+    ("en_paul_confident", "en_paul_confident (Paul, confident en)"),
+    ("gb_jane_neutral", "gb_jane_neutral (Jane, neutral en-GB)"),
+    ("gb_oliver_neutral", "gb_oliver_neutral (Oliver, neutral en-GB)"),
+    ("fr_marie_neutral", "fr_marie_neutral (Marie, neutral fr)"),
     ("voice_3150", "James (en-US)"),
+    ("voice_447", "Margaret (en-US)"),
+    ("voice_485", "Rob (en-US)"),
+    ("voice_478", "Sheila (en-US)"),
     ("voice_1788", "David (en-GB)"),
     ("voice_591", "Fred (en-GB)"),
+    ("voice_590", "Harriet (en-GB)"),
+    ("voice_3147", "Howard (en-GB)"),
+    ("voice_3149", "Hugo (en-GB)"),
+    ("voice_1787", "Mary (en-GB)"),
+    ("voice_1786", "Sky (en-GB)"),
     ("voice_483", "Elena (es)"),
     ("voice_3141", "Camille (fr)"),
+    ("voice_589", "Lea (fr)"),
+    ("voice_3137", "Manon (fr)"),
+    ("voice_592", "Marie (fr)"),
+    ("voice_3139", "Ananya (hi)"),
+    ("voice_3153", "Himanshu (hi)"),
+    ("voice_3146", "Olivia (hu)"),
+    ("voice_482", "Lorenzo (it)"),
     ("voice_3133", "Haruto (ja)"),
     ("voice_3135", "Jin (ko)"),
+    ("voice_3136", "Sung (ko)"),
+    ("voice_3145", "Lotte (nl)"),
+    ("voice_3134", "Lars (no)"),
+    ("voice_3154", "Leon (pl)"),
+    ("voice_480", "Gabriela (pt)"),
+    ("voice_3155", "Irina (ro)"),
+    ("voice_3132", "Tatiana (ru)"),
+    ("voice_3138", "Oran (tr)"),
+    ("voice_3140", "Taras (uk)"),
+    ("voice_3144", "Huong (vi)"),
     ("voice_3142", "Mei (zh)"),
+    ("voice_479", "Maryam (ar)"),
+    ("voice_3143", "Jordi (ca)"),
+    ("voice_481", "Heidi (de)"),
 ]
+
+_VOICE_IDS = frozenset(vid for vid, _ in VOXTRAL3_VOICES)
+_VOICE_LABELS = {label: vid for vid, label in VOXTRAL3_VOICES}
+
+
+def resolve_voice_id(value: Optional[str]) -> str:
+    """Resolve a configured voice (preset id or Studio-style label) to the API id."""
+    v = (value or "").strip()
+    if not v:
+        return DEFAULT_TTS_VOICE
+    if v in _VOICE_IDS:
+        return v
+    return _VOICE_LABELS.get(v, v)
 
 _POOLS: Dict[tuple, RealtimeTTSPool] = {}
 _POOLS_LOCK = threading.Lock()
@@ -86,7 +128,7 @@ class VoxtralRealtimeTTSProvider(TTSProvider):
 
     def list_models(self) -> List[Dict[str, Any]]:
         return [
-            {"id": DEFAULT_TTS_REALTIME_MODEL, "display": "Voxtral Mini TTS 3 (realtime WS + batch)"},
+            {"id": DEFAULT_TTS_REALTIME_MODEL, "display": "Voxtral Mini TTS Realtime 3 (streaming)"},
             {"id": DEFAULT_TTS_BATCH_MODEL, "display": "Voxtral Mini TTS 3 (batch /v1/audio/speech)"},
         ]
 
@@ -94,7 +136,7 @@ class VoxtralRealtimeTTSProvider(TTSProvider):
         return platform_gate_env("VOICE_CALL_TTS_MODEL", DEFAULT_TTS_REALTIME_MODEL) or DEFAULT_TTS_REALTIME_MODEL
 
     def default_voice(self) -> Optional[str]:
-        return platform_gate_env("VOICE_CALL_TTS_VOICE", DEFAULT_TTS_VOICE) or DEFAULT_TTS_VOICE
+        return resolve_voice_id(platform_gate_env("VOICE_CALL_TTS_VOICE", DEFAULT_TTS_VOICE) or DEFAULT_TTS_VOICE)
 
     def list_voices(self) -> List[Dict[str, Any]]:
         return [{"id": vid, "display": label} for vid, label in VOXTRAL3_VOICES]
@@ -118,7 +160,7 @@ class VoxtralRealtimeTTSProvider(TTSProvider):
         path = Path(output_path)
         if fmt != format and path.suffix.lstrip(".") != fmt:
             path = path.with_suffix(f".{fmt}")
-        voice_id = voice or platform_gate_env("VOICE_CALL_TTS_VOICE_ID", "") or self.default_voice()
+        voice_id = resolve_voice_id(voice or platform_gate_env("VOICE_CALL_TTS_VOICE_ID", "") or self.default_voice())
         data = batch_speech(
             base_url=self._base_url(),
             model=model or platform_gate_env("VOICE_CALL_TTS_BATCH_MODEL", DEFAULT_TTS_BATCH_MODEL) or DEFAULT_TTS_BATCH_MODEL,
@@ -138,10 +180,10 @@ class VoxtralRealtimeTTSProvider(TTSProvider):
         """Stream int16 mono PCM at ``stream_sample_rate`` for one sentence over a pooled WS."""
         if not text or not text.strip():
             return
-        key = (model or self.default_model(), voice or self.default_voice(), self.stream_sample_rate)
+        key = (model or self.default_model(), resolve_voice_id(voice or self.default_voice()), self.stream_sample_rate)
         pool = _pool_for(key, self._base_url(), mistral_api_key())
         session = pool.acquire()
-        logger.info("[voxtral] tts stream() sentence (%d chars) voice=%s via pool idle=%d", len(text), key[1], len(pool._idle))
+        logger.info("[voxtral] tts stream() sentence (%d chars) via pool idle=%d", len(text), len(pool._idle))
         try:
             yield from session.stream_sentence(text)
         except Exception as exc:
